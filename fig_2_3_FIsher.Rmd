@@ -1,0 +1,144 @@
+---
+title: "TCR repertoire diversity in Multiple Sclerosis: Fig 2ab and 3bc"
+author: "Maria Chernigovskaya"
+date: "4/30/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+```{r}
+library(reshape2)
+```
+
+
+
+# Fisher's test + adjusted pearson residuals code
+
+```{r}
+
+vdjdb <- read.csv("~/Downloads/vdjdb.csv", sep = ";", stringsAsFactor = FALSE)
+vdjdb_human <- subset(vdjdb, Species == "HomoSapiens" & nchar(CDR3) > 4)
+vdjdb_human_melt_df <- melt(vdjdb_human[, c("CDR3", "Epitope.species")], id = "CDR3")
+db_vdjdb <- vdjdb_human_melt_df
+colnames(db_vdjdb) <- c("CDR3", "tmp", "Pathology") 
+
+diseases_vdjdb <- c("CMV", "DENV1", "DENV2", "DENV3/4", "EBV", "HCV", "HIV-1", "HomoSapiens", "InfluenzaA", "YellowFeverVirus")  
+
+
+mcpas_db <- read.csv("~/Downloads/McPAS-TCR_3_2_20.csv", stringsAsFactor = FALSE, sep = ";") 
+mcpas_db_human <- subset(mcpas_db, Species == "Human" & nchar(CDR3.beta.aa) > 4)
+#mcpas_db_human <- subset(mcpas_db_human, Category == "Autoimmune" | Category == "Pathogens")
+mcpas_db_human_melt_df <- melt(mcpas_db_human[, c("CDR3.beta.aa", "Category", "Pathology")], id = "CDR3.beta.aa")
+db_mcpas <- mcpas_db_human_melt_df
+colnames(db_mcpas) <- c("CDR3", "tmp", "Pathology") 
+
+diseases_mcpas <- c("Celiac disease", "Cytomegalovirus (CMV)", "Diabetes Type 1", "Epstein Barr virus (EBV)", "Human immunodeficiency virus (HIV)", "Influenza", "M. tuberculosis", "Multiple sclerosis (MS)", "Rheumatoid Arthritis (RA)", "Yellow fever virus")
+
+
+ms_cdrs2 <- read.csv("~/Downloads/datasets_unique_cdrs_df.csv", stringsAsFactor = FALSE) 
+ms_cdrs2 <- ms_cdrs2$value
+
+shared_cdrs <- read.csv("~/Downloads/brain_csf_shared_no_planas.csv", stringsAsFactor = FALSE) 
+shared_cdrs <- shared_cdrs$amino_acid
+
+```
+
+
+
+```{r, echo=T}
+
+# db --- reference database (vdjdb or mcpas)
+# cdr3 --- data (shared_cdr3s (fig3) or ms_cdrs (fig2))
+# disease --- disease name (e.g. HIV, CMV, etc)
+
+get_stats <- function(db, cdr3, disease) {
+  disease_cdr3 <- unique(db$CDR3[db$Pathology == disease])
+  cont_table <- table(unique(db$CDR3) %in% cdr3, unique(db$CDR3) %in% disease_cdr3)
+  rownames(cont_table) <- c("not_in_data", "in_data")
+  colnames(cont_table) <- c("not_in_disease", "in_disease")
+  print("===============================================")
+  print(disease)
+  print(cont_table)
+  print("p-value:")
+  print(fisher.test(cont_table, alternative="great")$p.value)
+  print("Std residual:")
+  print(chisq.test(cont_table)$stdres[2, 2])
+  fisher.test(cont_table, alternative="great")$p.value
+}
+
+```
+
+Fisher's test p-values were corrected for multiple comparisons using Bonferroni correction
+
+
+```{r}
+
+process <- function(db, cdr3, diseases) {
+  pvals <- rep(NA, length(diseases))
+  for (i in 1:length(diseases)) {
+    disease <- diseases[i]
+    pvals[i] <- get_stats(db, cdr3, disease)
+  }
+  names(pvals) <- diseases
+  pvals <- p.adjust(pvals, method = "bonferroni")
+}
+
+```
+
+\newpage
+
+# Example: fig 2A, mcpas database, data ms_cdrs, Celiac disease
+
+
+```{r}
+get_stats(db_mcpas, ms_cdrs2, "Celiac disease")
+```
+
+
+\newpage
+
+# 2A
+```{r}
+pval2a <- process(db_mcpas, ms_cdrs2, diseases_mcpas)
+```
+## 2A significant
+```{r}
+pval2a[pval2a<0.05]
+```
+
+\newpage
+
+# 2B
+```{r}
+pval2b <- process(db_vdjdb, ms_cdrs2, diseases_vdjdb)
+```
+# 2B significant
+```{r}
+pval2b[pval2b<0.05]
+```
+
+\newpage
+
+# 3C
+```{r}
+pval3a <- process(db_vdjdb, shared_cdrs, diseases_vdjdb)
+```
+# 3C significant
+```{r}
+pval3a[pval3a<0.05]
+```
+
+\newpage
+
+# 3B
+```{r}
+pval3b <- process(db_mcpas, shared_cdrs, diseases_mcpas)
+```
+# 3B significant
+```{r}
+pval3b[pval3b<0.05]
+```
+
