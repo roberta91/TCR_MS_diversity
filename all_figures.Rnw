@@ -1,0 +1,1944 @@
+\documentclass{article}
+\title{TCR in MS paper revision eBioMedicine}
+\author{}
+\date{Last update: 11 may 2021}
+\usepackage[a4paper,top=2cm,bottom=2cm,left=2cm,right=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{subfig}
+\usepackage[labelfont=bf]{caption}
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+\maketitle
+
+\section{Introduction and aim}
+\subsection{Meta-analysis}
+Our aim is to perform a meta-analysis of the T-cell receptor (TCR) repertoire in MS patients from published databases in literature, identifying common features and differences across compartments and datasets.
+
+\subsection{Literature source}
+For this meta-analysis, we are going to evaluate the TCR databases of the following papers: Lossius et al., \textit{Eur J Immunol}, 2014; Planas et al., \textit{Front Immunol}, 2018; Salou et al., \textit{Ann of Clin and Transl Neurol}, 2015; Sousa et al., \textit{Ann of Clin and Transl Neurol}, 2016.
+
+\subsection{Definition of Evenness}
+\label{sec:antib-repert-divers}
+
+The Evenness (or ``state of clonal expansion'') is defined as the
+the quotient of the exponential of the Shannon entropy and Species Richness
+(SR: number of unique CDR3s in a given TCR dataset).
+%
+\begin{equation}
+  \label{eq:shannon_entropy}
+  \textrm{Shannon-Entropy} = -\sum f_i \log f_i
+\end{equation}, where
+$f_i$ is the frequency of the ith clone in a given TCR dataset.
+%
+\begin{equation}
+  \label{eq:shannon_evenness}
+  \textrm{Shannon-Evenness} = \exp(-\sum f_i \log f_i)/SR
+\end{equation}
+%
+Shannon-Evenness is 1 if all clones in a repertoire have the same
+frequency. Conversely, it converges to 0, if very few clones dominate
+in the repertoire. That is, if very few clones have very high
+frequency and a lot of clones have very low frequency.
+
+
+\subsection{Definition of TCR clone and public clone}
+\label{sec:antib-clonal-overlap}
+
+A clone is defined as V-J-CDR$\beta$3. A clone is considered as public when shared among at least 2 TCR repertoires.
+
+\subsection{Definition of clonal overlap}
+\label{sec:antib-clonal-overlap}
+
+Pairwise clonal overlap between repertoires $A$ and $B$ is calculated
+as: 
+\begin{equation}
+  \label{eq:1}
+  \mathrm{Overlap(A,B)} = \frac{\mathrm{A} \cap \mathrm{B}}{(\mathrm{mean}(|\mathrm{A}|, |\mathrm{B}|)}
+\end{equation},
+where $\mathrm{A} \cap \mathrm{B}$ is the absolute number of
+overlapping clones and $|\mathrm{A}|$ signifies the number of clones
+in repertoire A.
+
+
+\clearpage
+
+<<functions, echo=FALSE>>=
+
+library(stringr)
+library(compiler)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+library(viridis)
+library(gridExtra)
+library(NMF)
+library(vegan)
+library(reshape2)
+library(knitr)
+library(dplyr)
+library(RColorBrewer)
+library(ggpubr)
+library(data.table)
+library(ggbeeswarm)
+library(Biostrings)
+library(tidyr)
+library(VennDiagram)
+library(readr)
+library(ggpubr)
+library(car)
+library(betareg)
+library(exactRankTests)
+
+
+opts_chunk$set(warning=FALSE, fig.keep="none", stop_on_error=2)
+
+#Functions
+
+intersect_percentage_function <- function(x,y){
+ 
+    c(length(intersect(x,y)))/mean(c(length(x), length(y)))*100 
+ 
+} 
+
+
+shannon_entropy <- function(x){
+  p <- x[!(x==0)]/sum(x[!(x==0)], na.rm = TRUE)
+  -sum(p* log(p))
+  
+} 
+
+shannon_entropy <- cmpfun(shannon_entropy)
+
+
+simpsons_index <- function(x){
+p <- x/sum(x)
+sum(p^2)}
+
+d_two <- function(x){
+  1/simpsons_index(x)}
+
+
+
+min_entropy <- function(pop){
+    #Return the min-entropy of random variable with probability
+    f = pop/sum(pop)
+    -log(max(f))
+  } 
+
+
+min_entropy <- cmpfun(min_entropy)
+
+
+renyi_entropy <- function(pop, alpha=1){
+                                        # Return the R??nyi entropy of order alpha of random variables withprobability vector l. Source: http://www.lysator.liu.se/~jc/mthesis/A_Source_code.html#functiondef:entropies.py:entropy"""
+  f = pop/sum(pop)
+  if (abs(alpha - 1) < 10^(-10)){
+    return(shannon_entropy(pop))}
+  if (alpha == Inf){
+    return(min_entropy(pop))}
+  if(abs(alpha - 1) > 10^(-10)){
+    return((1/(1-alpha)) * log(sum(f^alpha)))}
+}
+        
+renyi_entropy <- cmpfun(renyi_entropy)
+
+
+se <- function(x) sqrt(var(x, na.rm = TRUE)/length(x)) #se of mean
+
+@
+
+
+<<data_loading, echo=FALSE, eval=FALSE, results=HIDE>>=
+
+setwd("C:/Users/Roberta/Desktop/Lavoro/Laboratorio/Progetto Natalizumab/R/codes")
+
+#load("../codes/datasets_no_planas")
+#datasets_ms <- datasets_no_planas
+#names(datasets_ms)
+#datasets_no_brain <- datasets_ms
+#datasets_no_brain[c(23,24,28,29,32,33)] <- NULL
+#names(datasets_no_brain)
+#save(file="datasets_no_brain", datasets_no_brain)
+
+load("../codes/datasets_no_brain")
+datasets_ms <- datasets_no_brain
+
+@
+
+
+<<repertoire_statistics_fig1C, echo = FALSE, eval = FALSE, results = HIDE>>=
+
+#datasets_shannon_ms <- read.csv("../codes/datasets_shannon_no_planas.csv", sep = ";", stringsAsFactor = TRUE)
+datasets_shannon_ms <- read.csv("../codes/datasets_shannon_no_planas_no_brain.csv", sep = ";", stringsAsFactor = TRUE)
+
+#### 
+datasets_shannon_csf <- datasets_shannon_ms[ datasets_shannon_ms$compartment %in% c("CSF"), ]
+sum(datasets_shannon_csf$reads) #242
+####
+
+datasets <- c("Lossius-DB", "Muraro-DB", "Ballerini-DB", "Laplaud-DB") 
+
+datasets_colors <- c("Ballerini-DB" = "coral1",
+          "Lossius-DB" = "yellow1", 
+          "Muraro-DB" = "navy",
+          "Laplaud-DB" = "palevioletred4")
+
+#compartments <- c("CSF", "PB", "brain")
+#compartments_colors <- brewer.pal(3, "PuRd") 
+
+datasets_shannon_ms2 <- datasets_shannon_ms %>% 
+  group_by(database) %>% 
+  mutate(shannon_evenness_norm = shannon_evenness - mean(shannon_evenness))
+
+datasets_shannon_plot_by_compartment <- ggboxplot(datasets_shannon_ms2, x = "compartment", y = "shannon_evenness_norm", color = "black", fill="database", add = "dotplot", palette =c("coral1", "palevioletred4", "yellow1", "navy"), xlab = FALSE, ylab = "Shannon-Evenness", font.label = "plain") 
+#`stat_bindot()` using `bins = 30`. Pick better value with `binwidth`.
+
+pdf("../codes/datasets_shannon_plot_by_compartment_no_planas_brain.pdf", width=9, height=5)
+print(datasets_shannon_plot_by_compartment)
+dev.off()
+
+t.test(datasets_shannon_ms2[datasets_shannon_ms2$compartment == "CSF", ]$shannon_evenness_norm, datasets_shannon_ms2[datasets_shannon_ms2$compartment == "PB", ]$shannon_evenness_norm)
+#p-value = 0.245
+
+wilcox.exact(datasets_shannon_ms2[datasets_shannon_ms2$compartment == "CSF", ]$shannon_evenness_norm, datasets_shannon_ms2[datasets_shannon_ms2$compartment == "PB", ]$shannon_evenness_norm, exact = TRUE)
+#p-value = 0.2317
+
+#### plot pooling with mean approach ####
+######### FIG. 1C ############
+
+compartments <- c("CSF", "PB")
+compartments_comparisons <- list(c("CSF", "PB"))
+
+datasets_shannon_plot_by_compartment <- ggplot(datasets_shannon_ms2, aes(compartment, shannon_evenness_norm)) +
+  geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.5) +
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=4, show.legend=TRUE, pch = 21, colour = "black") +
+ # geom_text(data = means, aes(compartment, shannon_evenness + 0.4,label=paste("",mean)),inherit.aes = F, colour="blue", label=paste("",mean), fontface="bold", size=5) +
+  #facet_grid(~compartment, scale = "free_x") +
+   theme_bw() + 
+  theme(strip.text = element_text(size = 15),  
+        strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0),
+       plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(1)), #size of y-axis 
+        axis.text.x = element_text(vjust = 0.5, 
+                                  hjust =0.5, size = 16), #size of x-axis 
+     axis.title = element_text(size=rel(1.2),  vjust=0.5), 
+      axis.title.y = element_text(vjust=1),
+     text = element_text(size=15)) + 
+  labs(x = "", y = "Shannon-Evenness") + 
+  scale_fill_manual(values = datasets_colors) +
+  theme(panel.grid.major.x = element_blank(), 
+        panel.grid.minor.y = element_blank(), 
+        panel.border = element_rect(colour = "black")) +
+stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+
+pdf("../codes/datasets_shannon_plot_by_compartment_no_planas_no_brain.pdf", width=9, height=5)
+print(datasets_shannon_plot_by_compartment)
+dev.off()
+
+@
+
+\begin{figure}[!h]
+\includegraphics[width=0.9\linewidth]{datasets_shannon_plot_by_compartment_no_planas_no_brain.pdf}
+\label{public_clones_datasets_statistics_plot_by_compartment}
+\centering
+\caption{}
+\end{figure}
+
+<<correlations_by_db_fig1A_and_B, echo = FALSE, eval = FALSE, results = HIDE>>=
+
+load("../codes/datasets_no_planas")
+
+datasets_shannon_no_planas <- read.csv("../codes/datasets_shannon_no_planas.csv", sep = ";", stringsAsFactor = TRUE)
+
+datasets <- c("Lossius-DB", "Muraro-DB", "Ballerini-DB", "Laplaud-DB") 
+
+datasets_colors <- c("Ballerini-DB" = "coral1",
+          "Lossius-DB" = "yellow1",
+          "Muraro-DB" = "navy", 
+          "Laplaud-DB" = "palevioletred4")
+
+compartments <- c("CSF", "PB", "brain")
+compartments_col <- c("#c994c7", "#dd1c77", "#e7e1ef") 
+
+######### FIG. 1A ############
+#### ballerini plot ####
+
+datasets_shannon_ballerini <- datasets_shannon_no_planas[ datasets_shannon_no_planas$database %in% c("Ballerini-DB"), ] #select only Ballerini-DB rows
+
+ballerini_cor <- data.frame(cor(datasets_shannon_ballerini$shannon_evenness, datasets_shannon_ballerini$reads),7e+05,0.6)
+colnames(ballerini_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.27, 3)
+label=paste("r=",r)
+
+cor_ballerini_plot <- ggplot(datasets_shannon_ballerini, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=compartment), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = compartments_col) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = ballerini_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_ballerini_plot.pdf", width=7, height=5)
+print(cor_ballerini_plot)
+dev.off()
+
+#### laplaud plot ####
+
+datasets_shannon_laplaud <- datasets_shannon_no_planas[ datasets_shannon_no_planas$database %in% c("Laplaud-DB"), ]
+
+write.csv(file="datasets_shannon_laplaud_no_brain.csv", datasets_shannon_laplaud)
+
+laplaud_cor <- data.frame(cor(datasets_shannon_laplaud$shannon_evenness, datasets_shannon_laplaud$reads),1500000,0.7)
+colnames(laplaud_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.38, 3)
+label=paste("r=",r)
+
+cor_laplaud_plot <- ggplot(datasets_shannon_laplaud, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=compartment), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = compartments_colors) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = laplaud_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_laplaud_plot.pdf", width=7, height=5)
+print(cor_laplaud_plot)
+dev.off()
+
+#### laplaud plot no brain ####
+
+compartments <- c("CSF", "PB")
+compartments_col <- c("#c994c7", "#dd1c77")
+
+datasets_shannon_laplaud_no_brain <- read.csv(file="datasets_shannon_laplaud_no_brain.csv", sep=";")
+
+laplaud_cor <- data.frame(cor(datasets_shannon_laplaud_no_brain$shannon_evenness, datasets_shannon_laplaud_no_brain $reads),1500000,0.7)
+colnames(laplaud_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.61, 3)
+label=paste("r=",r)
+
+cor_laplaud_plot <- ggplot(datasets_shannon_laplaud_no_brain, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=compartment), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = compartments_col) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = laplaud_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_laplaud_plot_no_brain.pdf", width=7, height=5)
+print(cor_laplaud_plot)
+dev.off()
+
+#### lossius plot ####
+
+datasets_shannon_lossius <- datasets_shannon_no_planas[ datasets_shannon_no_planas$database %in% c("Lossius-DB"), ] 
+
+lossius_cor <- data.frame(cor(datasets_shannon_lossius$shannon_evenness, datasets_shannon_lossius$reads),8000000,0.7)
+colnames(lossius_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.35, 3)
+label=paste("r=",r)
+
+cor_lossius_plot <- ggplot(datasets_shannon_lossius, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=compartment), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = compartments_col) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = lossius_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_lossius_plot.pdf", width=7, height=5)
+print(cor_lossius_plot)
+dev.off()
+
+#### muraro plot ####
+
+datasets_shannon_muraro <- datasets_shannon_no_planas[ datasets_shannon_no_planas$database %in% c("Muraro-DB"), ] 
+
+muraro_cor <- data.frame(cor(datasets_shannon_muraro$shannon_evenness, datasets_shannon_muraro$reads),5000000,0.7)
+colnames(muraro_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.21, 3)
+label=paste("r=",r)
+
+cor_muraro_plot <- ggplot(datasets_shannon_muraro, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=compartment), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = compartments_col) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = muraro_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_muraro_plot.pdf", width=7, height=5)
+print(cor_muraro_plot)
+dev.off()
+
+######### FIG. 1B ############
+#### CSF ####
+
+datasets_shannon_no_planas <- read.csv("../codes/datasets_shannon_no_planas.csv", sep = ";", stringsAsFactor = TRUE)
+
+datasets_shannon_csf <- datasets_shannon_no_planas[ datasets_shannon_no_planas$compartment %in% c("CSF"), ] 
+datasets_shannon_pb <- datasets_shannon_no_planas[ datasets_shannon_no_planas$compartment %in% c("PB"), ]
+
+datasets <- c("Lossius-DB", "Muraro-DB", "Ballerini-DB", "Laplaud-DB") 
+
+datasets_colors <- c("Ballerini-DB" = "coral1",
+          "Lossius-DB" = "yellow1",
+          "Muraro-DB" = "navy", 
+          "Laplaud-DB" = "palevioletred4")
+
+compartments <- c("CSF", "PB")
+compartments_col <- c("#c994c7", "#dd1c77") 
+
+#### CSF plot FIG. 1B ####
+
+csf_cor <- data.frame(cor(datasets_shannon_csf$shannon_evenness, datasets_shannon_csf$reads),7500000,0.6)
+colnames(csf_cor) <- c("pearson", "xpos","ypos")
+r=round(0.27, 3)
+label=paste("r=",r)
+
+cor_csf_plot <- ggplot(datasets_shannon_csf, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=database), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = datasets_colors) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = csf_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_csf_plot.pdf", width=7, height=5)
+print(cor_csf_plot)
+dev.off()
+
+#### PB plot FIG. 1B ####
+
+pb_cor <- data.frame(cor(datasets_shannon_pb$shannon_evenness, datasets_shannon_pb$reads),6000000,0.6)
+colnames(pb_cor) <- c("pearson", "xpos","ypos")
+r=round(-0.11, 3)
+label=paste("r=",r)
+
+cor_pb_plot <- ggplot(datasets_shannon_pb, aes(reads, shannon_evenness)) +
+geom_point(aes(fill=database), colour="black", size=4, shape=21) +
+  geom_smooth(method='lm', se=FALSE, color="green3") +
+  labs(x = "#Reads") +
+  labs(y = "Shannon-Evenness") +
+  theme_bw(base_size=15) +
+  scale_fill_manual(values = datasets_colors) +
+  theme(strip.text = element_text(size=15),
+        axis.title = element_text(size=20),
+        strip.background = element_rect(fill= "white", colour = "black"),
+        legend.title = element_blank(),
+        #legend.position = none,
+        text = element_text(size=15)) +
+  geom_text(data = pb_cor, aes(xpos, ypos,label=paste("r=",pearson)),inherit.aes = F, colour="blue", label=paste("r=",r), fontface="italic", size=5)
+
+pdf("../codes/cor_pb_plot.pdf", width=7, height=5)
+print(cor_pb_plot)
+dev.off()
+
+@
+
+
+
+<<public_clones_fig1D, eval=FALSE, echo=FALSE>>=
+
+public_clone_itemization_datasets <- lapply(datasets_ms, function(x) {
+    cat("x")
+       sapply(datasets_ms, function(y) which(x$amino_acid %in% y$amino_acid))})
+
+#do <- FALSE
+#if(do)
+#{
+public_clone_itemization_datasets <- lapply(1:length(datasets_ms), function(x) {
+    cat("x")
+       sapply(1:length(datasets_ms), function(y)  {
+           
+           if(x==y){
+           NA   
+             
+          }else
+           which(datasets_ms[[x]]$amino_acid %in% datasets_ms[[y]]$amino_acid)})
+       
+       
+       })
+
+public_clone_condensation_datasets <- lapply(public_clone_itemization_datasets, function(x) na.omit(unique(unlist(x, recursive = TRUE)))) # enumeration of public clones by repertoire
+
+public_clone_sequence_mapping_datasets <- lapply(1:length(public_clone_condensation_datasets), function(x) {
+    
+lol <- cbind(as.data.frame(datasets_ms[[x]]$amino_acid[public_clone_condensation_datasets[[x]]]),1)
+colnames(lol) <- c("amino_acid", names(datasets_ms)[x])
+lol[,"amino_acid"] <- as.character(lol[,"amino_acid"])
+lol 
+                                        
+                                        })# now we have public clones per sequence level
+
+#save(file="public_clone_sequence_mapping_datasets_no_brain.csv", public_clone_sequence_mapping_datasets)
+
+load("../codes/public_clone_sequence_mapping_datasets_no_brain")
+
+all_datasets_sample_name <- gsub("[0-9]{5}_([[:alnum:]]{1,6}-[[:alnum:]]{1,2})_.*","\\1", names(datasets_ms))
+
+public_clones_statistics_datasets_df <- data.frame(
+    #Absolute_Numbers= sapply(public_clone_condensation_datasets, length),
+    Relative_Percentage= sapply(public_clone_condensation_datasets, length)/sapply(datasets_ms, nrow)*100,
+    all_datasets_sample_name = all_datasets_sample_name)
+
+#write.csv(public_clones_statistics_datasets_df, "public_clones_statistics_datasets_df_no_brain.csv")
+
+public_clones_statistics_datasets_df <- read.csv(file="public_clones_statistics_datasets_df_no_brain.csv", sep=",")
+
+database_compartments_cols <- read.csv("database_compartment_cols_no_brain.csv", sep=";", stringsAsFactors = TRUE)
+
+public_clones_statistics_datasets_df <- cbind(public_clones_statistics_datasets_df, database_compartments_cols)
+
+# mean approach analysis
+
+public_clones_statistics_datasets_df2 <- public_clones_statistics_datasets_df %>% 
+  group_by(database) %>% 
+  mutate(Relative_Percentage_norm = Relative_Percentage - mean(Relative_Percentage))
+
+wilcox.exact(public_clones_statistics_datasets_df2[public_clones_statistics_datasets_df2$compartment == "CSF", ]$Relative_Percentage_norm, public_clones_statistics_datasets_df2[public_clones_statistics_datasets_df2$compartment == "PB", ]$Relative_Percentage_norm)
+# p-value = 0.001507
+
+######### FIG. 1D ############
+# Plot 
+
+public_clones_datasets_statistics_plot_by_compartment <- ggplot(public_clones_statistics_datasets_df2, aes(x = compartment, y = Relative_Percentage_norm)) +
+   geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.5) +
+         geom_quasirandom(aes(fill = database), dodge.width=0.9,  alpha=0.9, size=4, show.legend=TRUE, pch = 21, colour = "black") +
+ # geom_text(data = means, aes(compartment, shannon_evenness + 0.4,label=paste("",mean)),inherit.aes = F, colour="blue", label=paste("",mean), fontface="bold", size=5) +
+  #facet_grid(~compartment, scale = "free_x") +
+   theme_bw() + 
+  theme(strip.text = element_text(size = 15),  
+        strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0),
+       plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(1)), #size of y-axis 
+        axis.text.x = element_text(vjust = 0.5, 
+                                  hjust =0.5, size = 16), #size of x-axis 
+     axis.title = element_text(size=rel(1.2),  vjust=0.5), 
+      axis.title.y = element_text(vjust=1),
+     text = element_text(size=19)) + 
+  labs(x = "", y = "Public clones (%)") + 
+  scale_fill_manual(values = datasets_colors) +
+  theme(panel.grid.major.x = element_blank(), 
+        panel.grid.minor.y = element_blank(), 
+        panel.border = element_rect(colour = "black")) +
+stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+  
+pdf("../codes/public_clones_datasets_no_brain.pdf", width=8, height=5)
+print(public_clones_datasets_statistics_plot_by_compartment)
+dev.off()
+
+
+@
+
+\begin{figure}[!h]
+\includegraphics[width=0.9\linewidth]{public_clones_datasets_no_brain.pdf}
+\label{public_clones_datasets_statistics_plot_by_compartment}
+\centering
+\caption{}
+\end{figure}
+
+<<mcpastcr_overlap_fig2A, echo=FALSE, eval=FALSE>>=
+
+# McPAS-TCR
+
+mcpas_db <- read.csv("../codes/McPAS-TCR.csv", stringsAsFactor = FALSE)
+mcpas_db_human <- subset(mcpas_db, Species == "Human" & nchar(CDR3.beta.aa) > 4)
+mcpas_db_human <- subset(mcpas_db_human, Category == "Autoimmune" | Category == "Pathogens")
+
+mcpas_db_human_melt_df <- melt(mcpas_db_human[, c("CDR3.beta.aa", "Category", "Pathology")], id = "CDR3.beta.aa")
+
+
+mcpas_db_human_melt_df_median <- mcpas_db_human_melt_df %>%
+    group_by(variable, value) %>%
+         dplyr:::summarise(count =length(CDR3.beta.aa))
+
+
+#write.csv(file="datasets_mcpas_overlap_normalized2.csv", datasets_mcpas_overlap_normalized2)
+
+
+#### McPAS-TCR overlap by disease category without brain ####
+
+datasets_mcpas_overlap_cat_patho_melt_df <- read.csv("datasets_mcpas_overlap_cat_patho_melt_df_ms.csv", sep=";", stringsAsFactors = TRUE)
+
+#merge_brain <- function(df) {
+  # merge brain Laplaud with CSF
+  #datasets_mcpas_overlap_cat_patho_melt_df[datasets_mcpas_overlap_cat_patho_melt_df$compartment == "brain", ]$compartment <- "CSF"
+  #datasets_mcpas_overlap_cat_patho_melt_df$compartment <- droplevels(datasets_mcpas_overlap_cat_patho_melt_df$compartment)
+  #datasets_mcpas_overlap_cat_patho_melt_df }
+
+
+remove_brain <- function(df) {
+  # remove brain
+  datasets_mcpas_overlap_cat_patho_melt_df <- datasets_mcpas_overlap_cat_patho_melt_df[datasets_mcpas_overlap_cat_patho_melt_df$compartment != "brain", ]
+  datasets_mcpas_overlap_cat_patho_melt_df$compartment <- droplevels(datasets_mcpas_overlap_cat_patho_melt_df$compartment)
+  datasets_mcpas_overlap_cat_patho_melt_df
+}
+
+datasets_mcpas_overlap_cat_patho_melt_df <- remove_brain(datasets_mcpas_overlap_cat_patho_melt_df)
+
+datasets_mcpas_overlap_cat_patho_melt_df_no_brain <- datasets_mcpas_overlap_cat_patho_melt_df
+#write.csv(file="datasets_mcpas_overlap_cat_patho_melt_df_no_brain.csv", datasets_mcpas_overlap_cat_patho_melt_df_no_brain)
+
+datasets_mcpas_overlap_cat_patho_melt_df_no_brain <- read.csv("datasets_mcpas_overlap_cat_patho_melt_df_no_brain.csv", sep=";", stringsAsFactors = TRUE)
+
+datasets_mcpas_overlap_cat_patho_melt_df_no_brain_median <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain %>%
+    group_by(L2) %>%
+         dplyr:::summarise(mean =mean(value, na.rm = TRUE), 
+                           mean= mean(value, na.rm = TRUE),
+                           ymin_se = mean(value, na.rm = TRUE)-se(value), 
+                           ymax_se = mean(value, na.rm = TRUE)+se(value),
+                           max =max(value, na.rm = TRUE))
+
+datasets_mcpas_overlap_cat_patho_melt_df_no_brain_median <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain %>%
+    group_by(compartment, Var1) %>%
+         dplyr:::summarise(mean =mean(value, na.rm = TRUE), 
+                           mean= mean(value, na.rm = TRUE),
+                           ymin_se = mean(value, na.rm = TRUE)-se(value), 
+                           ymax_se = mean(value, na.rm = TRUE)+se(value),
+                           max =max(value, na.rm = TRUE))
+
+# mean approach analysis xxx
+
+datasets_mcpas_overlap_cat_patho_melt_df_no_brain2 <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+ #write.csv(file="datasets_mcpas_overlap_normalized.csv", datasets_mcpas_overlap_cat_patho_melt_df_no_brain2)
+
+#### significance ####
+
+datasets_mcpas_overlap_celiac <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("CD"), ]
+
+wilcox.exact(datasets_mcpas_overlap_celiac[datasets_mcpas_overlap_celiac$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_celiac[datasets_mcpas_overlap_celiac$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.0001985
+
+datasets_mcpas_overlap_flu <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("Influenza"), ]
+
+wilcox.exact(datasets_mcpas_overlap_flu[datasets_mcpas_overlap_flu$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_flu[datasets_mcpas_overlap_flu$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.9407
+
+datasets_mcpas_overlap_cmv <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("CMV"), ]
+
+wilcox.exact(datasets_mcpas_overlap_cmv[datasets_mcpas_overlap_cmv$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_cmv[datasets_mcpas_overlap_cmv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.006265
+
+datasets_mcpas_overlap_hiv <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("HIV"), ]
+
+wilcox.exact(datasets_mcpas_overlap_hiv[datasets_mcpas_overlap_hiv$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_hiv[datasets_mcpas_overlap_hiv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.00068
+
+datasets_mcpas_overlap_ra <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("RA"), ]
+
+wilcox.exact(datasets_mcpas_overlap_ra[datasets_mcpas_overlap_ra$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_ra[datasets_mcpas_overlap_ra$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.0008604
+
+datasets_mcpas_overlap_ms <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("MS"), ]
+
+wilcox.exact(datasets_mcpas_overlap_ms[datasets_mcpas_overlap_ms$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_ms[datasets_mcpas_overlap_ms$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.1173
+
+datasets_mcpas_overlap_t1d <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("T1D"), ]
+
+wilcox.exact(datasets_mcpas_overlap_t1d[datasets_mcpas_overlap_t1d$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_t1d[datasets_mcpas_overlap_t1d$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.005489
+
+datasets_mcpas_overlap_yfv <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("YFV"), ]
+
+wilcox.exact(datasets_mcpas_overlap_yfv[datasets_mcpas_overlap_yfv$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_yfv[datasets_mcpas_overlap_yfv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.0007153
+
+datasets_mcpas_overlap_tbc <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2[datasets_mcpas_overlap_cat_patho_melt_df_no_brain2$Var1 %in% c("M. tuberculosis"), ]
+
+wilcox.exact(datasets_mcpas_overlap_tbc[datasets_mcpas_overlap_tbc$compartment == "CSF", ]$value_norm, datasets_mcpas_overlap_tbc[datasets_mcpas_overlap_tbc$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.2477
+
+
+#### previous plot #### 
+
+datasets_mcpas_overlap_cat_patho_statistics_plot_compartment <- ggplot(datasets_mcpas_overlap_cat_patho_melt_df_no_brain2, aes(x = compartment, y = value_norm)) +
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=3, show.legend=TRUE, pch = 21, colour = "black") + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=10),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12, angle=320, hjust = 0, vjust = 1), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "Normalized McPAS-TCR CDR3 overlap") +
+  scale_fill_manual(values = datasets_colors) +
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+  #stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+
+pdf("../codes/datasets_mcpas_overlap_fisher.pdf", width=15, height=5)
+print(datasets_mcpas_overlap_cat_patho_statistics_plot_compartment)
+dev.off()
+
+
+#### analysis for revised paper may 2021 ####
+
+
+datasets_mcpas_overlap_normalized <- read.csv(file="datasets_mcpas_overlap_normalized.csv", sep=";")
+
+datasets_mcpas_overlap_normalized_cd <- datasets_mcpas_overlap_normalized[ datasets_mcpas_overlap_normalized$Var1 %in% c("CD"), ]
+datasets_mcpas_overlap_normalized_flu <- datasets_mcpas_overlap_normalized[ datasets_mcpas_overlap_normalized$Var1 %in% c("Influenza"), ]
+datasets_mcpas_overlap_normalized_tbc <- datasets_mcpas_overlap_normalized[ datasets_mcpas_overlap_normalized$Var1 %in% c("M. tuberculosis"), ]
+datasets_mcpas_overlap_normalized_ms <- datasets_mcpas_overlap_normalized[ datasets_mcpas_overlap_normalized$Var1 %in% c("MS"), ]
+datasets_mcpas_overlap_normalized_yfv <- datasets_mcpas_overlap_normalized[ datasets_mcpas_overlap_normalized$Var1 %in% c("YFV"), ]
+
+datasets_mcpas_overlap_revised <- rbind(datasets_mcpas_overlap_normalized_cd, datasets_mcpas_overlap_normalized_flu, datasets_mcpas_overlap_normalized_tbc, datasets_mcpas_overlap_normalized_ms, datasets_mcpas_overlap_normalized_yfv)
+
+datasets_mcpas_overlap_revised <- datasets_mcpas_overlap_revised[,-7] 
+
+datasets_mcpas_overlap_revised2 <- datasets_mcpas_overlap_revised %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+# one-tailed mann-whitney pvals
+#p-value celiac = 0.0001985
+#p-value flu = 0.9407
+#p-value yfv = 0.0007153
+#p-value ms = 0.1173
+#p-value tbc = 0.2477
+
+
+#### plot ####
+#### FIG. 2A ####
+
+datasets_mcpas_overlap_revised_plot <- ggplot(datasets_mcpas_overlap_revised2, aes(x = compartment, y = value_norm)) +
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=3, show.legend=TRUE, pch = 21, colour = "black") + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=10),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12, angle=0, hjust = 0, vjust = 1), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "Normalized McPAS-TCR CDR3 overlap") +
+  scale_fill_manual(values = datasets_colors)
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+  #stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+
+pdf("../codes/datasets_mcpas_overlap_revised.pdf", width=10, height=4)
+print(datasets_mcpas_overlap_revised_plot)
+dev.off()
+
+
+@
+
+
+\begin{figure}[!h]
+\includegraphics[width=0.9\linewidth]{datasets_mcpas_overlap_cat_patho_no_brain.pdf}
+\label{datasets_mcpas_overlap_cat_patho_no_brain}
+\centering
+\caption{}
+\end{figure}
+
+
+<<vdjdb_overlap_fig2B, echo = FALSE, eval = FALSE>>=
+
+vdjdb <- read.csv("../codes/vdjdb.csv", sep = ";", stringsAsFactor = FALSE)
+#vdjdb_epitope <- subset(vdjdb, Epitope.species == "Antigen species")
+vdjdb_melt_df <- melt(vdjdb[, c("CDR3", "Epitope.species")], id = "CDR3")
+vdjdb_melt_df_median <- vdjdb_melt_df %>%
+    group_by(variable, value) %>%
+         dplyr:::summarise(count =length(CDR3))
+
+
+#### overlap with VDJdb by disease ####
+
+vdjdb <- read.csv("../codes/vdjdb.csv", sep = ";", stringsAsFactor = FALSE)
+vdjdb_human <- subset(vdjdb, Species == "HomoSapiens" & nchar(CDR3) > 4)
+#vdjdb_human <- subset(vdjdb_human, Category == "Autoimmune" | Category == "Pathogens")
+
+vdjdb_human_melt_df <- melt(vdjdb_human[, c("CDR3", "Epitope.species")], id = "CDR3")
+
+
+vdjdb_human_melt_df_median <- vdjdb_human_melt_df %>%
+    group_by(variable, value) %>%
+         dplyr:::summarise(count =length(CDR3))
+
+# overlap with datasets
+
+datasets_vdjdb_overlap_cat_patho_melt_df <- melt(
+    list(lapply(datasets_ms, function(x) {
+        
+        vdjdb_subset  <- vdjdb_human[vdjdb_human$CDR3 %in% unique(paste(x$amino_acid)), ]
+        tapply(vdjdb_subset$CDR3, vdjdb_subset$Epitope.species, length)
+    }),
+         lapply(datasets_ms, function(x) {
+             
+             vdjdb_subset  <- vdjdb_human[vdjdb_human$CDR3. %in% unique(paste(x$amino_acid)), ]
+             tapply(vdjdb_subset$CDR3, vdjdb_subset$Epitope.species, length)
+         })
+         ))
+
+#datasets_vdjdb_overlap_cat_patho_melt_df <- write.csv(datasets_vdjdb_overlap_cat_patho_melt_df, "datasets_vdjdb_overlap_cat_patho_melt_df_ms_no_brain.csv")
+         
+datasets_vdjdb_overlap_cat_patho_melt_df <- read.csv("datasets_vdjdb_overlap_cat_patho_melt_df_ms_no_brain.csv", sep=";", stringsAsFactors = TRUE)
+
+# mean approach analysis 
+
+datasets_vdjdb_overlap_cat_patho_melt_df2 <- datasets_vdjdb_overlap_cat_patho_melt_df %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+write.csv(file="datasets_vdjdb_overlap_normalized.csv", datasets_vdjdb_overlap_cat_patho_melt_df2)
+
+
+#### significance with mann whitney ####
+
+datasets_vdjdb_overlap_denv1 <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("DENV1"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_denv1[datasets_vdjdb_overlap_denv1$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_denv1[datasets_vdjdb_overlap_denv1$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.009067
+
+datasets_vdjdb_overlap_denv3and4 <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("DENV3/4"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_denv3and4[datasets_vdjdb_overlap_denv3and4$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_denv3and4[datasets_vdjdb_overlap_denv3and4$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.006372
+
+datasets_vdjdb_overlap_ebv <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("EBV"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_ebv[datasets_vdjdb_overlap_ebv$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_ebv[datasets_vdjdb_overlap_ebv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.04391
+
+datasets_vdjdb_overlap_hcv <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("HCV"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_hcv[datasets_vdjdb_overlap_hcv$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_hcv[datasets_vdjdb_overlap_hcv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.001443
+
+datasets_vdjdb_overlap_hiv1 <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("HIV-1"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_hiv1[datasets_vdjdb_overlap_hiv1$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_hiv1[datasets_vdjdb_overlap_hiv1$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.0128
+
+datasets_vdjdb_overlap_yfv <- datasets_vdjdb_overlap_cat_patho_melt_df2[datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("YFV"), ]
+
+wilcox.exact(datasets_vdjdb_overlap_yfv[datasets_vdjdb_overlap_yfv$compartment == "CSF", ]$value_norm, datasets_vdjdb_overlap_yfv[datasets_vdjdb_overlap_yfv$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.01444
+
+
+#### previous plot ####
+
+datasets_vdjdb_overlap_cat_patho_plot_compartment <- ggplot(datasets_vdjdb_overlap_cat_patho_melt_df2, aes(x = compartment, y = value_norm)) +
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=3, show.legend=TRUE, pch = 21, colour = "black") + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=9),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12, angle=320, hjust = 0, vjust = 1), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "Normalized VDJdb CDR3 overlap") +
+  scale_fill_manual(values = datasets_colors) 
+  #stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+
+pdf("../codes/datasets_vdjdb_overlap_fisher.pdf", width=14, height=5)
+print(datasets_vdjdb_overlap_cat_patho_plot_compartment)
+dev.off()
+
+#### analysis for revision may 2021 ####
+
+####
+
+datasets_vdjdb_overlap_cat_patho_melt_df2_denv1 <- datasets_vdjdb_overlap_cat_patho_melt_df2[ datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("DENV1"), ]
+datasets_vdjdb_overlap_cat_patho_melt_df2_denv3e4 <- datasets_vdjdb_overlap_cat_patho_melt_df2[ datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("DENV3/4"), ]
+datasets_vdjdb_overlap_cat_patho_melt_df2_yfv <- datasets_vdjdb_overlap_cat_patho_melt_df2[ datasets_vdjdb_overlap_cat_patho_melt_df2$Var1 %in% c("YFV"), ]
+
+datasets_vdjdb_overlap_revised <- rbind(datasets_vdjdb_overlap_cat_patho_melt_df2_denv1, datasets_vdjdb_overlap_cat_patho_melt_df2_denv3e4, datasets_vdjdb_overlap_cat_patho_melt_df2_yfv)
+
+#p-value denv1 = 0.009067
+#p-value denv3/4 = 0.006372
+#p-value yfv = 0.01444
+
+#### plot ####
+######## FIG. 2B ##########
+
+datasets_vdjdb_overlap_revised_plot <- ggplot(datasets_vdjdb_overlap_revised, aes(x = compartment, y = value_norm)) +
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=3, show.legend=TRUE, pch = 21, colour = "black") + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=10),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12, angle=0, hjust = 0, vjust = 1), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "Normalized VDJdb CDR3 overlap") +
+  scale_fill_manual(values = datasets_colors) +
+  geom_rect(data=datasets_vdjdb_overlap_revised, mapping=aes(xmin=0, xmax=0, ymin=-60, ymax=+0), fill = "white", alpha=1)
+
+pdf("../codes/datasets_vdjdb_overlap_revised.pdf", width=10, height=4)
+print(datasets_vdjdb_overlap_revised_plot)
+dev.off()
+
+
+
+@
+
+
+\begin{figure}[!h]
+\includegraphics[width=0.9\linewidth]{datasets_vdjdb_overlap_cat_patho_no_brain.pdf}
+\label{datasets_vdjdb_overlap_cat_patho_no_brain}
+\centering
+\caption{}
+\end{figure}
+
+
+<<networks_fig5, echo = FALSE, eval=FALSE>>=
+
+library(igraph) 
+#load("../codes/public_clone_sequence_mapping_datasets_ms")
+
+#do <- FALSE
+
+#if(do)
+  {
+    
+all_datasets_igraphs <- list()
+
+for (i in 1:length(datasets_ms)) { 
+
+    cat(".")
+   
+    unique_cdr3s <- as.character(datasets_ms[[i]]$amino_acid[1:ifelse(length(datasets_ms[[i]]$amino_acid)<10000, length(datasets_ms[[i]]$amino_acid), 10000)])
+    names(unique_cdr3s) <-   as.character(datasets_ms[[i]]$reads[1:ifelse(length(datasets_ms[[i]]$reads)<10000, length(datasets_ms[[i]]$reads), 10000)])
+    
+    unique_cdr3s <- unique_cdr3s[!duplicated(unique_cdr3s)]
+    
+    cdr3_antigen_specific_dist <- stringDist(as.character(unique_cdr3s), method = "levenshtein")
+    
+    cdr3_antigen_specific_mat <- as.matrix(cdr3_antigen_specific_dist)
+    
+    cdr3_antigen_specific_bol <- cdr3_antigen_specific_mat
+    
+    cdr3_antigen_specific_bol[cdr3_antigen_specific_bol<=1] <- 1
+    
+    cdr3_antigen_specific_bol[cdr3_antigen_specific_bol>1] <- 0
+    
+    colnames(cdr3_antigen_specific_bol) <- unname(unique_cdr3s)
+    
+    rownames(cdr3_antigen_specific_bol) <- unname(unique_cdr3s)
+    
+    graphx <- igraph::simplify(graph.adjacency(cdr3_antigen_specific_bol, weighted=T, mode = "undirected"))
+    graphx <- set_vertex_attr(graphx, "frequency", value = log10(as.numeric(names(unique_cdr3s))))
+    graphx <- set_vertex_attr(graphx, "public_private", value = ifelse(c(unname(unique_cdr3s) %in% gsub(".*_(.*)_.*", "\\1", as.character(public_clone_sequence_mapping_datasets[[i]]$amino_acid)))==TRUE, "Public", "Private"))
+
+    all_datasets_igraphs[[i]] <- graphx
+    
+# } 
+
+#save(file = "../codes/all_datasets_ms_igraphs_log10frequency_10000clones", all_datasets_igraphs)
+
+}
+
+load("../codes/all_datasets_ms_igraphs_log10frequency_10000clones") 
+
+names(all_datasets_igraphs) <- names(datasets_ms)[1:length(datasets_ms)]
+
+
+connected_nodes_datasets <- sapply(all_datasets_igraphs, function(x) 1-prop.table(table(igraph::degree(x), vertex_attr(x, name = "public_private")))[1])*100
+
+
+#public_clones_networks_datasets_statistics_df <- data.frame(
+#    private_connected_nodes_datasets,
+#    public_connected_nodes_datasets,
+#    all_datasets_sample_name  = all_datasets_sample_name)
+
+# public and private 
+clones_networks_datasets_statistics_df <- data.frame(
+    connected_nodes_datasets,
+    all_datasets_sample_name  = all_datasets_sample_name) 
+
+clones_networks_datasets_statistics_df_melt_df <- melt(clones_networks_datasets_statistics_df)
+clones_networks_datasets_statistics_df_melt_df$variable <- factor(clones_networks_datasets_statistics_df_melt_df$variable)
+
+#write.csv(file="public_clones_networks_datasets_statistics_melt_df_ms.csv", clones_networks_datasets_statistics_df_melt_df)
+
+public_clones_networks_datasets_statistics_melt_df_ms <- read.csv("public_clones_networks_datasets_statistics_melt_df_ms.csv", sep=";", stringsAsFactors = TRUE)
+
+levels(clones_networks_datasets_statistics_df_melt_df$variable) <- c("Connected clones (%)")
+
+####
+
+
+public_clones_networks_datasets_statistics_melt_df_ms <- read.csv("public_clones_networks_datasets_statistics_melt_df_ms.csv", sep=";", stringsAsFactors = TRUE)
+
+remove_brain <- function(df) {
+  # remove brain
+  public_clones_networks_datasets_statistics_melt_df_ms <- public_clones_networks_datasets_statistics_melt_df_ms[public_clones_networks_datasets_statistics_melt_df_ms$compartment != "brain", ]
+  public_clones_networks_datasets_statistics_melt_df_ms$compartment <- droplevels(public_clones_networks_datasets_statistics_melt_df_ms$compartment)
+  public_clones_networks_datasets_statistics_melt_df_ms
+}
+
+public_clones_networks_datasets_statistics_melt_df_ms <- remove_brain(public_clones_networks_datasets_statistics_melt_df_ms)
+
+# mean approach analysis
+
+public_clones_networks_datasets_statistics_melt_df_ms2 <- public_clones_networks_datasets_statistics_melt_df_ms %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+wilcox.exact(public_clones_networks_datasets_statistics_melt_df_ms2[public_clones_networks_datasets_statistics_melt_df_ms2$compartment == "CSF", ]$value_norm, public_clones_networks_datasets_statistics_melt_df_ms2[public_clones_networks_datasets_statistics_melt_df_ms2$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.0001135
+
+
+#### plot ####
+#### FIG. 5E ####
+
+datasets_public_clones_networks_datasets_statistics_plot <- ggplot(subset(public_clones_networks_datasets_statistics_melt_df_ms2), aes(x = compartment, y = value_norm))
+datasets_public_clones_networks_statistics_df_database <- datasets_public_clones_networks_datasets_statistics_plot + 
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=4, show.legend=TRUE, pch = 21, colour = "black") +
+  theme_bw() + 
+      #facet_grid(~variable, scales = "free_x") + 
+   theme(strip.text = element_blank(),  strip.background = element_rect(fill = "white", colour = "black"))+ 
+  theme(plot.title = element_text(face="bold", size=rel(1), hjust=0),plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), axis.text.x = element_text(vjust = 0.5, hjust =0.5, size = 19), axis.title = element_text(size=rel(1.1),  vjust=0.5), axis.title.y = element_text(vjust=1), text = element_text(size=14)) +
+  labs(x = "", y = "Normalized connected clones (%)", colour  = "", fill  = "") +                       
+         scale_fill_manual(values = datasets_colors) + 
+         #scale_colour_manual(values = experiment_colors) +
+      theme(panel.grid.major.x = element_blank(), panel.grid.minor.y = element_blank(), panel.border = element_rect(colour = "black")) + 
+  stat_compare_means(comparisons = compartments_comparisons,  method = "wilcox.test", label = "p.signif", hide.ns = FALSE, colour = "black", size = 4)
+
+pdf("../codes/networks_statistics_no_brain.pdf", width=8, height=5)
+print(datasets_public_clones_networks_statistics_df_database)
+dev.off()
+
+#### network statistics by MS diagnosis FIG. NOT INCLUDED IN THE PAPER ####
+
+clones_networks_datasets_no_planas_diagnosis <- read.csv("clones_networks_datasets_no_planas_diagnosis.csv", sep=";", stringsAsFactors = TRUE)
+
+# mean approach analysis
+
+clones_networks_datasets_no_planas_diagnosis2 <- clones_networks_datasets_no_planas_diagnosis %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+diagnosis <- c("PPMS", "RRMS")
+diagnosis_colors <- brewer.pal(3, "Greys")  
+diagnosis_comparisons <- list(c("RRMS", "PPMS"))
+
+#### plot ####
+
+clones_networks_statistics_diagnosis_plot <- ggplot(subset(clones_networks_datasets_no_planas_diagnosis2), aes(x = diagnosis, y = value_norm))
+datasets_public_clones_networks_statistics_df_diagnosis <- clones_networks_statistics_diagnosis_plot + 
+     geom_boxplot(aes(), outlier.size = 0.1, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=4, show.legend=TRUE, pch = 21, colour = "black") +
+  theme_bw() + 
+      #facet_grid(~variable, scales = "free_x") + 
+   theme(strip.text = element_blank(),  strip.background = element_rect(fill = "white", colour = "black"))+ 
+  theme(plot.title = element_text(face="bold", size=rel(1), hjust=0),plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), axis.text.x = element_text(vjust = 0.5, hjust =0.5, size = 19), axis.title = element_text(size=rel(1.3),  vjust=0.5), axis.title.y = element_text(vjust=1), text = element_text(size=14)) +
+  labs(x = "", y = "Connected clones (%)", colour  = "", fill  = "") +                
+         scale_fill_manual(values = datasets_colors) + 
+         #scale_colour_manual(values = diagnosis_colors) +
+      theme(panel.grid.major.x = element_blank(), panel.grid.minor.y = element_blank(), panel.border = element_rect(colour = "black")) + 
+  stat_compare_means(comparisons = diagnosis_comparisons,  method = "wilcox.test", label = "p.signif", hide.ns = FALSE, colour = "black", size = 4)
+
+
+pdf("../codes/datasets_public_clones_networks_statistics_df_diagnosis_normalized.pdf", width=7, height=4)
+print(datasets_public_clones_networks_statistics_df_diagnosis)
+dev.off()
+
+@
+
+\begin{figure}[!h]
+\includegraphics[width=0.9\linewidth]{networks_statistics_no_brain.pdf}
+\label{networks_statistics_no_brain}
+\centering
+\caption{}
+\end{figure}
+
+<<hla_evenness_profiles, eval=FALSE, echo=FALSE, results=HIDE>>=
+
+#### this analysis was performed for a reviewer, the figure is not in the paper ####
+
+compartment <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms))
+compartment <- ifelse(str_detect(compartment, "PB"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_pm"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_pm"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_am"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_am"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_mem"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_mem"), "PB", compartment)
+#compartment <- ifelse(str_detect(compartment, "brain"), "brain", compartment)
+compartment <- ifelse(str_detect(compartment, "CSF"), "CSF", compartment)
+
+database <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms))
+database <- ifelse(str_detect(database, "Ballerini-DB"), "Ballerini-DB", database)
+database <- ifelse(str_detect(names(datasets_ms), "Muraro-DB"), "Muraro-DB", database)
+database <- ifelse(str_detect(names(datasets_ms), "Lossius-DB"), "Lossius-DB", database)
+database <- ifelse(str_detect(names(datasets_ms), "Laplaud"), "Laplaud-DB", database)
+
+hla <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms))
+hla <- ifelse(str_detect(hla, "CSF4_Ballerini-DB_CSF_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF4-2_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF4-3_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF4-5_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF4-6_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF5_Ballerini-DB_CSF_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF5-2_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF5-3_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF5-5_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF5-6_Ballerini-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "ME_Blood_CD4_pm_Laplaud-DB_PB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "ME_Blood_CD8_pm_Laplaud-DB_PB_MS"), "DR1501+", hla)
+#hla <- ifelse(str_detect(hla, "ME_Brain_C3C3_Laplaud-DB_brain_MS"), "DR1501+", hla)
+#hla <- ifelse(str_detect(hla, "ME_Brain_CervP1_Laplaud-DB_brain_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS2_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS2_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS3_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS3_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS5_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS5_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS6_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS6_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS8_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS8_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS9_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS9_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS10_CSF_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "MS10_PB_Lossius-DB_MS"), "DR1501+", hla)
+hla <- ifelse(str_detect(hla, "CSF2-2_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF2-3_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF2-5_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF2-6_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF2_Ballerini-DB_CSF_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF3-2_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF3-3_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF3-5_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF3-6_Ballerini-DB_PB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CSF3_Ballerini-DB_CSF_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CD4_pm"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CD8_pm"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CD4_am"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CD8_am"), "DR1501-", hla)
+#hla <- ifelse(str_detect(hla, "CN_Brain_LBB_Laplaud-DB_brain_MS"), "DR1501-", hla)
+#hla <- ifelse(str_detect(hla, "CN_Brain_MEC_Laplaud-DB_brain_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "CN_CSF_Laplaud-DB_CSF_MS"), "DR1501-", hla)
+#hla <- ifelse(str_detect(hla, "RF_Brain_SB2_Laplaud-DB_brain_MS"), "DR1501-", hla)
+#hla <- ifelse(str_detect(hla, "RF_Brain_SB4C_Laplaud-DB_brain_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "RF_CSF_Laplaud-DB_CSF_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS1_CSF_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS1_PB_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS4_CSF_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS4_PB_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS7_CSF_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS7_PB_Lossius-DB_MS"), "DR1501-", hla)
+hla <- ifelse(str_detect(hla, "MS-1_CSF_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-1_PB_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-2_CSF_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-2_PB_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-3_CSF_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-3_PB_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-4_CSF_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-4_PB_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-5_CSF_Muraro-DB_MS"), "ND", hla)
+hla <- ifelse(str_detect(hla, "MS-5_PB_Muraro-DB_MS"), "ND", hla)
+
+
+color_df <- data.frame(compartment = compartment,
+                       database = database,
+                       hla = hla)
+
+write.csv(file="color_df_hla_no_brain.csv", color_df)
+
+colnames(color_df) <- c("Compartment", "Database", "HLA")
+
+sample_name <- gsub("[0-9]{5}_([[:alnum:]]{1,6}-[[:alnum:]]{1,2})_.*","\\1", names(datasets_ms))
+
+{ 
+  
+  
+  profiles_evenness_matrix_datasets_ms_hla <- t(t(sapply(datasets_ms, function(x) exp(renyi(x[,"reads"]/sum(x[,"reads"]), scales = seq(0,10,0.2)))))/sapply(datasets_ms, nrow))
+  
+ save(profiles_evenness_matrix_datasets_ms_hla, file="profiles_evenness_matrix_datasets_hla_no_brain.gz")
+  
+}
+
+profiles_evenness_matrix_datasets_ms_hla_cor <- cor(profiles_evenness_matrix_datasets_ms_hla)
+profiles_evenness_matrix_datasets_ms_hla_df <- as.data.frame(profiles_evenness_matrix_datasets_ms_hla_cor)
+write.csv(file="profiles_evenness_matrix_datasets_hla_no_brain.csv", profiles_evenness_matrix_datasets_ms_hla_df)
+
+profiles_evenness_matrix_datasets_ms_hla_df <- read.csv(file="profiles_evenness_matrix_datasets_hla_no_brain.csv", sep=";")
+evenness_matrix_hla_ms_df <- melt(profiles_evenness_matrix_datasets_ms_hla_df)
+evenness_matrix_hla_ms_df <- na.omit(evenness_matrix_hla_ms_df)
+names(evenness_matrix_hla_ms_df)[names(evenness_matrix_hla_ms_df) == "X"] <- "sample_name" # change column name
+evenness_matrix_hla_ms_list <- split(evenness_matrix_hla_ms_df, f = evenness_matrix_hla_ms_df$sample_name)
+
+database <- c("Ballerini-DB", "Muraro-DB", "Lossius-DB", "Laplaud-DB")
+datasets_colors <- c("Ballerini-DB" = "coral1",
+          "Lossius-DB" = "yellow1", 
+          "Muraro-DB" = "navy", 
+          "Laplaud-DB" = "palevioletred4")
+
+compartments <- c("CSF", "PB")
+#compartments_colors <- brewer.pal(3, "PuRd")
+
+hla <- c("DR1501+", "DR1501-", "ND")
+#hla_colors <- brewer.pal(3, "Greens") 
+
+#### heatmap no brain ####
+
+pdf("../codes/heatmap_evenness_profiles_hla_no_brain.pdf", width = 15, height = 15, onefile=FALSE)
+
+heatmap <-  aheatmap(cor(profiles_evenness_matrix_datasets_ms_hla),
+          color = c("-RdYlBu2:100"),
+          border_color = FALSE,
+          annCol = color_df,
+          #annRow = color_df,
+          annColors = list(
+          Compartment = c("#e7e1ef", "#d4b9da"),
+          HLA = c("#468739", "#93d486", "black"),
+          Database = c("coral1", "palevioletred4", "yellow1", "navy")))
+
+
+dev.off()
+@
+
+
+<<soto_2020_fig4A, eval=FALSE, echo=FALSE, results=HIDE>>=
+
+#### HD datasets overlap no brain ####
+
+datasets_soto_overlap_melt_df_percentage_ms <- read.csv(file="datasets_no_brain_soto_overlap.csv", sep=";")
+
+datasets_soto_overlap_melt_df_median <- datasets_soto_overlap_melt_df_percentage_ms %>%
+    group_by(L2) %>%
+         dplyr:::summarise(mean =mean(value, na.rm = TRUE), 
+                           mean= mean(value, na.rm = TRUE),
+                           ymin_se = mean(value, na.rm = TRUE)-se(value), 
+                           ymax_se = mean(value, na.rm = TRUE)+se(value),
+                           max =max(value, na.rm = TRUE))
+
+
+# mean approach analysis
+
+datasets_soto_overlap_melt_df_percentage_ms2 <- datasets_soto_overlap_melt_df_percentage_ms %>% 
+  group_by(database) %>% 
+  mutate(value_norm = value - mean(value))
+
+wilcox.exact(datasets_soto_overlap_melt_df_percentage_ms2[datasets_soto_overlap_melt_df_percentage_ms2$compartment == "CSF", ]$value_norm, datasets_soto_overlap_melt_df_percentage_ms2[datasets_soto_overlap_melt_df_percentage_ms2$compartment == "PB", ]$value_norm, exact = TRUE)
+#p-value = 0.006849
+
+#### plot ####
+############## FIG. 4A ########
+
+datasets_no_brain_soto_overlap_statistics_plot <- ggplot(datasets_soto_overlap_melt_df_percentage_ms2, aes(x = compartment, y = value_norm)) +
+     geom_boxplot(aes(), outlier.shape = NA, position = position_dodge(width=0.9), size = 0.1) + 
+         geom_quasirandom(aes(fill=database), dodge.width=0.9,  alpha=0.9, size=4, show.legend=TRUE, pch = 21, colour = "black") + 
+  theme_bw() +
+      #facet_wrap(.~compartment) +
+   theme(strip.text = element_text(size = 14),  strip.background = element_rect(fill = "white", colour = "black"))+ 
+  theme(plot.title = element_text(face="bold", size=rel(1), hjust=0),plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(1)), axis.text.x = element_text(vjust = 0.5, hjust =0.5, size=19), axis.title = element_text(size=rel(1.3),  vjust=0.5), axis.title.y = element_text(vjust=1, size=15)) +
+  labs(x = "", y = "Normalized Soto-DB CDR3 overlap (%)", colour  = "", fill  = "") +
+  scale_fill_manual(values = datasets_colors) +
+  stat_compare_means(comparisons = compartments_comparisons, label = "p.signif", method = "wilcox.test", hide.ns = FALSE, size = 4) 
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+
+pdf("../codes/datasets_no_brain_soto_overlap_plot.pdf", width=8, height=5)
+print(datasets_no_brain_soto_overlap_statistics_plot)
+dev.off()
+
+
+@
+
+
+<<hd_database_characterization, eval=FALSE, echo=FALSE, results=HIDE>>=
+
+###### SUPPLEMENTARY FIG. 2C ######
+
+soto_db_reads_by_sample <- read.csv(file="soto_db_reads_by_sample.csv", sep=";")
+
+cellpop <- c("CD4 memory", "CD8 memory")
+cellpop_colors <- c("white", "gray")
+
+soto_characterization_plot <- ggplot(soto_db_reads_by_sample, aes(patient, reads)) + 
+  geom_bar(aes(fill=cellpop), width=0.5, colour="black", position = "dodge", stat = "identity") +
+#geom_text(data = soto_db_reads_by_sample, aes(label=round(reads, 1)), size=4, colour = "black", position = position_nudge(y = +1000000, x = +0.2)) +
+  theme_bw() + 
+  theme(strip.text = element_text(size = 19),  
+        strip.background = element_rect(fill = "white", colour = "black")) + 
+  theme(plot.title = element_text(size=rel(0.5), hjust=0),
+        plot.margin = unit(c(2, 2, 2, 2),"points")) + 
+  theme(axis.text = element_text(size=rel(1)), #size of y-axis 
+        axis.text.x = element_text(vjust = 0.5, 
+                                   hjust = 0.5,
+                                   angle = 0,
+                                   size = 15), #size of x-axis 
+        axis.title = element_text(size=rel(1.7),  vjust=0.5), 
+        axis.title.y = element_text(vjust=1),
+        text = element_text(size=10)) + 
+  labs(x = "patient", y = "Total CDR3s-a.a.", colour  = "", fill  = "") + 
+ scale_fill_manual(values = cellpop_colors) + 
+ scale_colour_manual(values = cellpop_colors) +
+  scale_y_continuous(labels = function(x) format(x, scientific = TRUE)) +
+  theme(panel.grid.major.x = element_blank(), 
+        panel.grid.minor.y = element_blank(), 
+        panel.border = element_rect(colour = "black")) 
+
+pdf("../codes/soto_characterization_plot.pdf", width=9, height=5)
+plot(soto_characterization_plot)
+dev.off()
+
+@
+
+
+
+<<hd_ms_evenness_profiles_fig4B, eval=FALSE, echo=FALSE, results=HIDE>>=
+
+#load("../codes/soto_db")
+#datasets_ms_hd_no_brain <- do.call(c, list(datasets_ms, soto_db))
+#save(file="datasets_ms_hd_no_brain", datasets_ms_hd_no_brain)
+#load("../codes/datasets_ms_hd_no_brain")
+
+compartment <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms_hd_no_brain))
+compartment <- ifelse(str_detect(compartment, "PB"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_pm"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_pm"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_am"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_am"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD4_mem"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CD8_mem"), "PB", compartment)
+compartment <- ifelse(str_detect(compartment, "CSF"), "CSF", compartment)
+
+database <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms_hd_no_brain))
+database <- ifelse(str_detect(database, "Ballerini-DB"), "Ballerini-DB", database)
+database <- ifelse(str_detect(names(datasets_ms_hd_no_brain), "Muraro-DB"), "Muraro-DB", database)
+database <- ifelse(str_detect(names(datasets_ms_hd_no_brain), "Lossius-DB"), "Lossius-DB", database)
+database <- ifelse(str_detect(names(datasets_ms_hd_no_brain), "Laplaud"), "Laplaud-DB", database)
+database <- ifelse(str_detect(names(datasets_ms_hd_no_brain), "Soto"), "Soto-DB", database)
+
+disease <- gsub(".*_(CD[0-9]{1}_[A-Z,a-z]{2,6}).*","\\1",names(datasets_ms_hd_no_brain))
+disease <- ifelse(str_detect(disease, "MS"), "MS", disease)
+disease <- ifelse(str_detect(disease, "HD"), "HD", disease)
+disease <- ifelse(str_detect(disease, "CD8_pm"), "MS", disease)
+disease <- ifelse(str_detect(disease, "CD4_pm"), "MS", disease)
+disease <- ifelse(str_detect(disease, "CD8_am"), "MS", disease)
+disease <- ifelse(str_detect(disease, "CD4_am"), "MS", disease)
+disease <- ifelse(str_detect(disease, "CD4_mem"), "HD", disease)
+disease <- ifelse(str_detect(disease, "CD8_mem"), "HD", disease)
+
+#color_df <- data.frame(compartment = compartment,
+ #                      database = database,
+  #                     disease = disease)
+
+#write.csv(file="color_df.csv", color_df)
+
+
+
+sample_name <- gsub("[0-9]{5}_([[:alnum:]]{1,6}-[[:alnum:]]{1,2})_.*","\\1", names(datasets_ms_hd_no_brain))
+
+{ 
+  
+  
+  profiles_evenness_matrix_datasets <- t(t(sapply(datasets_ms_hd_no_brain, function(x) exp(renyi(x[,"reads"]/sum(x[,"reads"]), scales = seq(0,10,0.2)))))/sapply(datasets_ms_hd_no_brain, nrow))
+  
+ #save(profiles_evenness_matrix_datasets, file="profiles_evenness_matrix_datasets_ms_hd_no_brain.gz")
+  
+}
+
+
+profiles_evenness_matrix_datasets_ms_hd_df <- read.csv(file="profiles_evenness_matrix_datasets_hd_no_brain_df.csv", sep=";")
+#profiles_evenness_matrix_datasets_ms_hd_df <- profiles_evenness_matrix_datasets_ms_hd_df[c(-2)]
+evenness_matrix_df <- melt(profiles_evenness_matrix_datasets_ms_hd_df)
+evenness_matrix_df <- na.omit(evenness_matrix_df)
+names(evenness_matrix_df)[names(evenness_matrix_df) == "X"] <- "sample_name" # change column name
+#evenness_matrix_df <- evenness_matrix_df[c(-2)]
+#write.csv(file="evenness_matrix_df_ms_hd_no_planas.csv", evenness_matrix_df)
+evenness_matrix_list <- split(evenness_matrix_df, f = evenness_matrix_df$sample_name)
+
+#database <- c("Ballerini-DB", "Muraro-DB", "Lossius-DB", "Planas-DB", "Laplaud-DB", "Soto-DB")
+database <- c("Ballerini-DB", "Muraro-DB", "Lossius-DB", "Laplaud-DB", "Soto-DB")
+datasets_colors <- c("Ballerini-DB" = "coral1",
+          "Lossius-DB" = "yellow1", 
+          "Muraro-DB" = "navy", 
+          "Laplaud-DB" = "palevioletred4",
+          "Soto-DB" = "maroon")
+
+compartments <- c("CSF", "PB")
+#compartments_colors <- brewer.pal(3, "PuRd")
+
+disease <- c("MS", "HD")
+#disease_colors <- brewer.pal(3, "Greens") 
+
+color_df <- read.csv(file="color_df_no_brain.csv", sep=";")
+
+colnames(color_df) <- c("Compartment", "Database", "Disease")
+
+######### FIG. 4B ###########
+
+pdf("../codes/heatmap_evenness_profiles_hd_no_brain.pdf", width = 15, height = 15, onefile=FALSE)
+
+heatmap <-  aheatmap(cor(profiles_evenness_matrix_datasets),
+          color = c("-RdYlBu2:100"),
+          border_color = FALSE,
+          annCol = color_df,
+          #annRow = color_df,
+          annColors = list(
+          Compartment = c("#e7e1ef", "#d4b9da"),
+          Disease = c("#468739", "#93d486"),
+          Database = c("coral1", "palevioletred4", "yellow1", "navy", "maroon")))
+
+
+dev.off()
+@
+
+
+<<shared_sequences_brain_csf_no_planas_fig3, eval=FALSE, echo=FALSE, results=HIDE>>=
+
+load("../codes/brain_data")
+load("../codes/datasets_csf")
+
+brain_data[c(1:3)] <- NULL
+names(datasets_csf)
+datasets_csf[c(5,6,19:29)] <- NULL
+
+brain_df <- melt(brain_data) #18768 sequences
+brain_df["compartment"] <- c("brain") 
+brain_df <- brain_df[c(-5)]    
+
+csf_df <- melt(datasets_csf) #302307 sequences
+csf_df["compartment"] <- c("CSF")
+csf_df <- csf_df[c(-5)] 
+
+brain_csf_shared <- intersect(brain_df$amino_acid, csf_df$amino_acid) #7150
+brain_csf_shared <- melt(brain_csf_shared)
+names(brain_csf_shared)[names(brain_csf_shared) == "value"] <- "amino_acid"
+
+write.csv(file="brain_csf_shared_no_planas.csv", brain_csf_shared)
+
+
+#### venn's plot brain-csf ####
+
+pdf("../codes/brain_csf_no_planas_shared_venn.pdf", width=4, height=4)
+
+grid.newpage()
+draw.pairwise.venn(area1 = 18768, area2 = 302307, cross.area = 7150, category = c("brain", 
+    "CSF"), lty = rep("solid", 
+    2), lwd = c(1,1), fill = c("#cd9ecc", "#e8e4f1"), alpha = rep(0.5, 1), cat.pos = c(0, 0), scaled=FALSE,  fontfamily = "sans", cat.cex = 1, cat.fontfamily = "sans", cat.fontface = "bold")
+
+dev.off()
+
+#### overlap with mcpas-tcr ####
+
+brain_csf_shared["database"] <- c("brain-CSF_shared")
+brain_csf_shared_list <- split(brain_csf_shared, f=brain_csf_shared$database)
+
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- melt(
+    list(lapply(brain_csf_shared_list, function(x) {
+        
+        mcpas_subset  <- mcpas_db_human[mcpas_db_human$CDR3.beta.aa %in% unique(paste(x$amino_acid)), ]
+        tapply(mcpas_subset$CDR3.beta.aa, mcpas_subset$Pathology, length)
+    }),
+         lapply(brain_csf_shared_list, function(x) {
+             
+             mcpas_subset  <- mcpas_db_human[mcpas_db_human$CDR3.beta.aa %in% unique(paste(x$amino_acid)), ]
+             tapply(mcpas_subset$CDR3.beta.aa,mcpas_subset$Category, length)
+         })
+         ))
+
+#brain_csf_mcpas_overlap_cat_patho_melt_df <- write.csv(brain_csf_mcpas_overlap_cat_patho_melt_df, "brain_csf_no_planas_mcpas_overlap_cat_patho_melt_df.csv")
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- read.csv(file="brain_csf_no_planas_mcpas_overlap_cat_patho_melt_df.csv", sep=";")
+
+#### previous plot ####
+
+brain_csf_mcpas_overlap_cat_patho_melt_df_plot <- ggplot(brain_csf_mcpas_overlap_cat_patho_melt_df, aes(x = Var1, y = value)) +
+     geom_bar(aes(), color="black", stat="identity", fill="gray", width=0.4) + 
+         geom_text(data = brain_csf_mcpas_overlap_cat_patho_melt_df, aes(label=round(value, 1)), size=7, colour = "black", position = position_nudge(y = +20)) + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=11, color="black", face="bold"),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=15),
+        axis.title.x = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "brain-CSF and McPAS-TCR CDR3 overlap")
+  #scale_fill_manual(values = compartments_colors)
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+
+pdf("../codes/brain_csf_mcpas_overlap_no_planas.pdf", width=17, height=5)
+print(brain_csf_mcpas_overlap_cat_patho_melt_df_plot)
+dev.off()
+
+
+#### brain-CSF and VDJdb overlap ####
+
+brain_csf_vdjdb_overlap_cat_patho_melt_df <- melt(
+    list(lapply(brain_csf_shared_list, function(x) {
+        
+        vdjdb_subset  <- vdjdb_human[vdjdb_human$CDR3 %in% unique(paste(x$amino_acid)), ]
+        tapply(vdjdb_subset$CDR3, vdjdb_subset$Epitope.species, length)
+    }),
+         lapply(brain_csf_shared_list, function(x) {
+             
+             vdjdb_subset  <- vdjdb_human[vdjdb_human$CDR3. %in% unique(paste(x$amino_acid)), ]
+             tapply(vdjdb_subset$CDR3, vdjdb_subset$Epitope.species, length)
+         })
+         ))
+
+#brain_csf_vdjdb_overlap_cat_patho_melt_df <- write.csv(brain_csf_vdjdb_overlap_cat_patho_melt_df, "brain_csf_vdjdb_no_planas_overlap_cat_patho_melt_df.csv")
+         
+brain_csf_vdjdb_overlap_cat_patho_melt_df <- read.csv("brain_csf_vdjdb_no_planas_overlap_cat_patho_melt_df.csv", sep=";", stringsAsFactors = TRUE)
+
+#### plot ####
+
+brain_csf_vdjdb_overlap_cat_patho_melt_df_plot <- ggplot(brain_csf_vdjdb_overlap_cat_patho_melt_df, aes(x = Var1, y = value)) +
+     geom_bar(aes(), color="black", stat="identity", fill="gray", width=0.4) + 
+         geom_text(data = brain_csf_vdjdb_overlap_cat_patho_melt_df, aes(label=round(value, 1)), size=7, colour = "black", position = position_nudge(y = +20)) + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=11, color="black", face="bold"),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=15),
+        axis.title.x = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "brain-CSF and VDJdb CDR3 overlap")
+  #scale_fill_manual(values = compartments_colors)
+  #scale_color_manual(values = sample_name)
+  #scale_y_continuous(limits = c(0, 100))
+
+pdf("../codes/brain_csf_vdjdb_overlap_no_planas.pdf", width=15, height=5)
+print(brain_csf_vdjdb_overlap_cat_patho_melt_df_plot)
+dev.off()
+
+#### mcpas-tcr brain-CSF shared overlap as percentage ####
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- read.csv(file="brain_csf_no_planas_mcpas_overlap_cat_patho_melt_df.csv", sep=";", dec=",")
+
+brain_csf_mcpas_overlap_cat_patho_melt_df_plot <- ggplot(brain_csf_mcpas_overlap_cat_patho_melt_df, aes(x = Var1, y = percent_overlap)) +
+     geom_bar(aes(), color="black", stat="identity", fill="gray", width=0.4) + 
+         geom_text(data = brain_csf_mcpas_overlap_cat_patho_melt_df, size=7, colour = "black", position = position_nudge(y = +3), aes(label=round(percent_overlap, 1))) +
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=11, color="black", face="bold"),
+         panel.background = element_rect(fill = "white"), 
+         strip.background = element_rect(fill = "white")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=15),
+        axis.title.x = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "brain-CSF and McPAS-TCR CDR3 overlap (%)")
+
+pdf("../codes/brain_csf_mcpas_overlap_no_planas.pdf", width=17, height=5)
+print(brain_csf_mcpas_overlap_cat_patho_melt_df_plot)
+dev.off()
+
+
+########### repeated analysis for last revision may 2021 ############
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- read.csv(file="brain_csf_no_planas_mcpas_overlap_cat_patho_melt_df.csv", sep=";")
+
+#brain_csf_mcpas_overlap_cat_patho_melt_df_cd_ms <- brain_csf_mcpas_overlap_cat_patho_melt_df[ brain_csf_mcpas_overlap_cat_patho_melt_df$Var1 %in% c("Celiac disease", "MS"), ]
+
+remove_autoimm <- function(df) {
+  # remove autoimm cat
+  brain_csf_mcpas_overlap_cat_patho_melt_df <- brain_csf_mcpas_overlap_cat_patho_melt_df[brain_csf_mcpas_overlap_cat_patho_melt_df$Var1 != "Autoimmune", ]
+  brain_csf_mcpas_overlap_cat_patho_melt_df$Var1 <- droplevels(brain_csf_mcpas_overlap_cat_patho_melt_df$Var1)
+  brain_csf_mcpas_overlap_cat_patho_melt_df
+}
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- remove_autoimm(brain_csf_mcpas_overlap_cat_patho_melt_df)
+
+remove_patho <- function(df) {
+  # remove autoimm cat
+  brain_csf_mcpas_overlap_cat_patho_melt_df <- brain_csf_mcpas_overlap_cat_patho_melt_df[brain_csf_mcpas_overlap_cat_patho_melt_df$Var1 != "Pathogens", ]
+  brain_csf_mcpas_overlap_cat_patho_melt_df$Var1 <- droplevels(brain_csf_mcpas_overlap_cat_patho_melt_df$Var1)
+  brain_csf_mcpas_overlap_cat_patho_melt_df
+}
+
+brain_csf_mcpas_overlap_cat_patho_melt_df <- remove_patho(brain_csf_mcpas_overlap_cat_patho_melt_df)
+
+#### plot ####
+############# FIG. 3B ###########
+
+brain_csf_mcpas_overlap_revised_plot <- ggplot(brain_csf_mcpas_overlap_cat_patho_melt_df, aes(x = Var1, y = value)) +
+     geom_bar(aes(), color="black", stat="identity", fill="gray", width=0.4) + 
+         geom_text(data = brain_csf_mcpas_overlap_cat_patho_melt_df, aes(label=round(value, 1)), size=7, colour = "black", position = position_nudge(y = +30)) + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=11, color="black", face="bold"),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "brain-CSF and McPAS-TCR CDR3 overlap")
+
+pdf("../codes/brain_csf_mcpas_revised_overlap.pdf", width=14, height=4)
+print(brain_csf_mcpas_overlap_revised_plot)
+dev.off()
+
+
+#### VDJdb ####
+
+brain_csf_vdjdb_overlap_cat_patho_melt_df <- read.csv("brain_csf_vdjdb_no_planas_overlap_cat_patho_melt_df.csv", sep=";", stringsAsFactors = TRUE)
+
+#brain_csf_vdjdb_overlap_cat_patho_melt_df_denv1 <- brain_csf_vdjdb_overlap_cat_patho_melt_df[ brain_csf_vdjdb_overlap_cat_patho_melt_df$Var1 %in% c("DENV1"), ]
+
+remove_htlv1 <- function(df) {
+  brain_csf_vdjdb_overlap_cat_patho_melt_df <- brain_csf_vdjdb_overlap_cat_patho_melt_df[brain_csf_vdjdb_overlap_cat_patho_melt_df$Var1 != "HTLV-1", ]
+  brain_csf_vdjdb_overlap_cat_patho_melt_df$Var1 <- droplevels(brain_csf_vdjdb_overlap_cat_patho_melt_df$Var1)
+  brain_csf_vdjdb_overlap_cat_patho_melt_df
+}
+
+brain_csf_vdjdb_overlap_cat_patho_melt_df <- remove_htlv1(brain_csf_vdjdb_overlap_cat_patho_melt_df)
+
+
+#### plot ####
+############ fig. 3C ###########
+
+brain_csf_vdjdb_revised_overlap_plot <- ggplot(brain_csf_vdjdb_overlap_cat_patho_melt_df, aes(x = Var1, y = value)) +
+     geom_bar(aes(), color="black", stat="identity", fill="gray", width=0.4) + 
+         geom_text(data = brain_csf_vdjdb_overlap_cat_patho_melt_df, aes(label=round(value, 1)), size=7, colour = "black", position = position_nudge(y = +30)) + 
+  theme_bw() +
+      facet_grid(~Var1, scales = "free_x") +
+   theme(strip.text = element_text(size=11, color="black", face="bold"),  
+         strip.background = element_rect(fill = "white", colour = "black")) +
+  theme(plot.title = element_text(size=rel(1), hjust=0), 
+        plot.margin = unit(c(2, 2, 2, 2),"points")) +
+  theme(axis.text = element_text(size=rel(0.9)), 
+        axis.title.y = element_text(vjust=1, size=12),
+        axis.title.x = element_blank(),
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank()) +
+  labs(x = "", y = "brain-CSF and VDJdb CDR3 overlap")
+
+pdf("../codes/brain_csf_vdjdb_revised_overlap.pdf", width=14, height=4)
+print(brain_csf_vdjdb_revised_overlap_plot)
+dev.off()
+
+@
+
+
+
+<<fisher_1st_version_databases_overlap, echo = FALSE, eval = FALSE, results = HIDE>>=
+
+
+#### NO FIGURE IN THE PAPER ####
+
+
+mcpas_db <- read.csv("../codes/McPAS-TCR_3_2_20.csv", stringsAsFactor = FALSE, sep = ";") # TODO replace with vdjdb for fig 3C
+mcpas_db_human <- subset(mcpas_db, Species == "Human" & nchar(CDR3.beta.aa) > 4)
+mcpas_db_human <- subset(mcpas_db_human, Category == "Autoimmune" | Category == "Pathogens")
+
+mcpas_db_human_melt_df <- melt(mcpas_db_human[, c("CDR3.beta.aa", "Category", "Pathology")], id = "CDR3.beta.aa")
+
+#### brain-CSF shared sequences ####
+
+shared_cdrs <- read.csv("../codes/brain_csf_shared_no_planas.csv", stringsAsFactor = FALSE) # TODO for fig 2 replace with the correspondent cdrs (from fig 2) and repeat with mcpas and vdjdb
+shared_cdrs <- shared_cdrs$amino_acid
+all_cdrs <- unique(c(mcpas_db_human_melt_df$CDR3.beta.aa, shared_cdrs)) # list of all unique cdrs in the db and in MS data
+print(length(all_cdrs))
+
+diseases <- c("Celiac disease", "Cytomegalovirus (CMV)", "Diabetes Type 1", "Epstein Barr virus (EBV)", "Human immunodeficiency virus (HIV)", "Influenza", "M. tuberculosis", "Multiple sclerosis (MS)", "Rheumatoid Arthritis (RA)", "Yellow fever virus") # the list of the diseases should be identical with the figure
+
+pvals <- rep(NA, length(diseases))
+
+for (i in 1:length(diseases)) {
+  disease <- diseases[i]
+  disease_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Pathology == disease] # get cdrs associated with the disease
+  #if (sum((all_cdrs %in% shared_cdrs & all_cdrs %in% disease_cdrs)) > 5) { # if we found at least 5 cdrs for this disease (otherwise the test doesnt make sense)
+    #print(disease)
+    #print(table(all_cdrs %in% shared_cdrs, all_cdrs %in% disease_cdrs))
+    test <- fisher.test(all_cdrs %in% disease_cdrs, all_cdrs %in% shared_cdrs, alternative="great")
+    pvals[i] <- test$p.value
+  #} else {
+  #  pvals[i] <- NA
+  #}
+  names(pvals)[i] <- disease
+}
+  
+# pathogens and autoimmune
+pathogens_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Category == "Pathogens"] 
+pval_pathogens <- fisher.test(all_cdrs %in% pathogens_cdrs, all_cdrs %in% shared_cdrs, alternative="great")$p.value
+#print(table(all_cdrs %in% pathogens_cdrs, all_cdrs %in% shared_cdrs))
+
+autoimmune_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Category == "Autoimmune"] 
+pval_autoimmune <- fisher.test(all_cdrs %in% autoimmune_cdrs, all_cdrs %in% shared_cdrs, alternative="great")$p.value
+#print(table(all_cdrs %in% autoimmune_cdrs, all_cdrs %in% shared_cdrs))
+
+new_names <- c(names(pvals), "pathogens", "autoimmune")
+pvals <- c(pvals, pval_pathogens, pval_autoimmune)
+names(pvals) <- new_names
+pvals_adj <- p.adjust(pvals, method = "bonferroni")
+
+print(pvals_adj)
+
+#### datasets overlap with mcpas-tcr ####
+
+#datasets_ms_df <- melt(datasets_ms)
+#datasets_cdrs <- melt(datasets_ms_df$amino_acid)
+#names(datasets_cdrs)[names(datasets_cdrs) == "value"] <- "amino_acid" # change column name
+#write.csv(file="datasets_cdrs.csv", datasets_cdrs) # this is a list of all CDR3s from our databases
+
+datasets_cdrs <- read.csv("../codes/datasets_cdrs.csv", stringsAsFactor = FALSE)
+#names(datasets_cdrs)[names(datasets_cdrs) == "x"] <- "amino_acid" # change column name
+datasets_cdrs <- datasets_cdrs$amino_acid
+all_datasets_cdrs <- unique(c(mcpas_db_human_melt_df$CDR3.beta.aa, datasets_cdrs)) # list of all unique cdrs in the db and in MS data
+print(length(all_datasets_cdrs))
+tail(all_datasets_cdrs)
+all_datasets_cdrs_df <- melt(all_datasets_cdrs)
+write.csv(file="all_datasets_cdrs_df.csv", all_datasets_cdrs_df) # this is a list of all unique cdrs in the db and in our databases
+all_datasets_cdrs_df <- read.csv(file="all_datasets_cdrs_df.csv", sep=",")
+all_datasets_cdrs <- unique(c(mcpas_db_human_melt_df$CDR3.beta.aa, datasets_cdrs)) # list of all unique cdrs in the db and in MS data
+
+#### unique cdr3 from my databases ####
+
+#datasets_unique_cdrs <- unique(c(datasets_cdrs)) # list of all unique cdrs in the db and in MS data
+#datasets_unique_cdrs_df <- melt(datasets_unique_cdrs)
+#write.csv(file="datasets_unique_cdrs_df.csv", datasets_unique_cdrs_df)
+
+datasets_unique_cdrs <- read.csv("../codes/datasets_unique_cdrs_df.csv", stringsAsFactor = FALSE)
+datasets_unique_cdrs <- datasets_unique_cdrs$value
+all_datasets_cdrs <- unique(c(mcpas_db_human_melt_df$CDR3.beta.aa, datasets_unique_cdrs)) # list of all unique cdrs in the db and in MS data
+
+####
+
+diseases <- c("Celiac disease", "Cytomegalovirus (CMV)", "Diabetes Type 1", "Epstein Barr virus (EBV)", "Human immunodeficiency virus (HIV)", "Influenza", "M. tuberculosis", "Multiple sclerosis (MS)", "Rheumatoid Arthritis (RA)", "Yellow fever virus") # the list of the diseases should be identical with the figure
+
+pvals <- rep(NA, length(diseases))
+
+for (i in 1:length(diseases)) {
+  disease <- diseases[i]
+  disease_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Pathology == disease] # get cdrs associated with the disease
+  #if (sum((all_cdrs %in% shared_cdrs & all_cdrs %in% disease_cdrs)) > 5) { # if we found at least 5 cdrs for this disease (otherwise the test doesnt make sense)
+    #print(disease)
+    #print(table(all_cdrs %in% shared_cdrs, all_cdrs %in% disease_cdrs))
+    test <- fisher.test(all_datasets_cdrs %in% disease_cdrs, all_datasets_cdrs %in% datasets_cdrs, alternative="great")
+    pvals[i] <- test$p.value
+  #} else {
+  #  pvals[i] <- NA
+  #}
+  names(pvals)[i] <- disease
+}
+  
+# pathogens and autoimmune
+pathogens_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Category == "Pathogens"] 
+pval_pathogens <- fisher.test(all_datasets_cdrs %in% pathogens_cdrs, all_datasets_cdrs %in% datasets_cdrs, alternative="great")$p.value
+print(table(all_datasets_cdrs %in% pathogens_cdrs, all_datasets_cdrs %in% datasets_cdrs))
+#         FALSE    TRUE
+#  FALSE     951 1191105
+#  TRUE     4631    1024
+
+autoimmune_cdrs <- mcpas_db_human$CDR3.beta.aa[mcpas_db_human$Category == "Autoimmune"] 
+pval_autoimmune <- fisher.test(all_datasets_cdrs %in% autoimmune_cdrs, all_datasets_cdrs %in% datasets_cdrs, alternative="great")$p.value
+print(table(all_datasets_cdrs %in% autoimmune_cdrs, all_datasets_cdrs %in% datasets_cdrs))
+#         FALSE    TRUE
+#  FALSE    4625 1191888
+#  TRUE      957     241
+
+new_names <- c(names(pvals), "pathogens", "autoimmune")
+pvals <- c(pvals, pval_pathogens, pval_autoimmune)
+names(pvals) <- new_names
+pvals_adj <- p.adjust(pvals, method = "bonferroni")
+
+print(pvals_adj)
+
+#                     Celiac disease              Cytomegalovirus (CMV) 
+#                                 1                                  1 
+#                   Diabetes Type 1           Epstein Barr virus (EBV) 
+#                                 1                                  1 
+#Human immunodeficiency virus (HIV)                          Influenza 
+#                                 1                                  1 
+#                   M. tuberculosis            Multiple sclerosis (MS) 
+#                                 1                                  1 
+#         Rheumatoid Arthritis (RA)                 Yellow fever virus 
+#                                 1                                  1 
+#                         pathogens                         autoimmune 
+#                                 1                                  1 
+
+#pvalue is always not significant
+
+#### median values for CSF ####
+
+datasets_mcpas_overlap_norm_csf <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2 %>% filter(compartment == "CSF")
+#write.csv(file="datasets_mcpas_overlap_norm_csf.csv", datasets_mcpas_overlap_norm_csf)
+
+datasets_mcpas_overlap_norm_csf_cd <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "CD")
+datasets_mcpas_overlap_norm_csf_cd_median <- median(datasets_mcpas_overlap_norm_csf_cd$value_norm) #-12.4
+
+datasets_mcpas_overlap_norm_csf_cmv <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "CMV")
+datasets_mcpas_overlap_norm_csf_cmv_median <- median(datasets_mcpas_overlap_norm_csf_cmv$value_norm) #-20.4
+
+datasets_mcpas_overlap_norm_csf_ebv <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "EBV")
+datasets_mcpas_overlap_norm_csf_ebv_median <- median(datasets_mcpas_overlap_norm_csf_ebv$value_norm) #-7.3
+
+datasets_mcpas_overlap_norm_csf_hiv <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "HIV")
+datasets_mcpas_overlap_norm_csf_hiv_median <- median(datasets_mcpas_overlap_norm_csf_hiv$value_norm) #-22.9
+
+datasets_mcpas_overlap_norm_csf_flu <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "Influenza")
+datasets_mcpas_overlap_norm_csf_flu_median <- median(datasets_mcpas_overlap_norm_csf_flu$value_norm) #22.6
+
+datasets_mcpas_overlap_norm_csf_tbc <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "M. tuberculosis")
+datasets_mcpas_overlap_norm_csf_tbc_median <- median(datasets_mcpas_overlap_norm_csf_tbc$value_norm) #-26.9
+
+datasets_mcpas_overlap_norm_csf_ms <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "MS")
+datasets_mcpas_overlap_norm_csf_ms_median <- median(datasets_mcpas_overlap_norm_csf_ms$value_norm) #-25.9
+
+datasets_mcpas_overlap_norm_csf_ra <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "RA")
+datasets_mcpas_overlap_norm_csf_ra_median <- median(datasets_mcpas_overlap_norm_csf_ra$value_norm) #-25.9
+
+datasets_mcpas_overlap_norm_csf_t1d <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "T1D")
+datasets_mcpas_overlap_norm_csf_t1d_median <- median(datasets_mcpas_overlap_norm_csf_t1d$value_norm) #-13.9
+
+datasets_mcpas_overlap_norm_csf_yfv <- datasets_mcpas_overlap_norm_csf %>% filter(Var1 == "YFV")
+datasets_mcpas_overlap_norm_csf_yfv_median <- median(datasets_mcpas_overlap_norm_csf_yfv$value_norm) #-21.9
+
+datasets_mcpas_norm_median <- cbind(datasets_mcpas_overlap_norm_csf_cd_median, datasets_mcpas_overlap_norm_csf_cmv_median, datasets_mcpas_overlap_norm_csf_ebv_median, datasets_mcpas_overlap_norm_csf_flu_median, datasets_mcpas_overlap_norm_csf_hiv_median, datasets_mcpas_overlap_norm_csf_ms_median, datasets_mcpas_overlap_norm_csf_ra_median, datasets_mcpas_overlap_norm_csf_t1d_median, datasets_mcpas_overlap_norm_csf_tbc_median, datasets_mcpas_overlap_norm_csf_yfv_median)
+
+datasets_mcpas_norm_median_df <- melt(datasets_mcpas_norm_median_df)
+
+#### median values for PB ####
+
+datasets_mcpas_overlap_norm_pb <- datasets_mcpas_overlap_cat_patho_melt_df_no_brain2 %>% filter(compartment == "PB")
+#write.csv(file="datasets_mcpas_overlap_norm_pb.csv", datasets_mcpas_overlap_norm_pb)
+
+datasets_mcpas_overlap_norm_pb_cd <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "CD")
+datasets_mcpas_overlap_norm_pb_cd_median <- median(datasets_mcpas_overlap_norm_pb_cd$value_norm) #-2.3
+
+datasets_mcpas_overlap_norm_pb_cmv <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "CMV")
+datasets_mcpas_overlap_norm_pb_cmv_median <- median(datasets_mcpas_overlap_norm_pb_cmv$value_norm) #-4.6
+
+datasets_mcpas_overlap_norm_pb_ebv <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "EBV")
+datasets_mcpas_overlap_norm_pb_ebv_median <- median(datasets_mcpas_overlap_norm_pb_ebv$value_norm) #4.2
+
+datasets_mcpas_overlap_norm_pb_hiv <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "HIV")
+datasets_mcpas_overlap_norm_pb_hiv_median <- median(datasets_mcpas_overlap_norm_pb_hiv$value_norm) #-5.1
+
+datasets_mcpas_overlap_norm_pb_flu <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "Influenza")
+datasets_mcpas_overlap_norm_pb_flu_median <- median(datasets_mcpas_overlap_norm_pb_flu$value_norm) #27.2
+
+datasets_mcpas_overlap_norm_pb_tbc <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "M. tuberculosis")
+datasets_mcpas_overlap_norm_pb_tbc_median <- median(datasets_mcpas_overlap_norm_pb_tbc$value_norm) #-25.9
+
+datasets_mcpas_overlap_norm_pb_ms <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "MS")
+datasets_mcpas_overlap_norm_pb_ms_median <- median(datasets_mcpas_overlap_norm_pb_ms$value_norm) #-19.9
+
+datasets_mcpas_overlap_norm_pb_ra <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "RA")
+datasets_mcpas_overlap_norm_pb_ra_median <- median(datasets_mcpas_overlap_norm_pb_ra$value_norm) #-7.3
+
+datasets_mcpas_overlap_norm_pb_t1d <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "T1D")
+datasets_mcpas_overlap_norm_pb_t1d_median <- median(datasets_mcpas_overlap_norm_pb_t1d$value_norm) #-1.8
+
+datasets_mcpas_overlap_norm_pb_yfv <- datasets_mcpas_overlap_norm_pb %>% filter(Var1 == "YFV")
+datasets_mcpas_overlap_norm_pb_yfv_median <- median(datasets_mcpas_overlap_norm_pb_yfv$value_norm) #-4.9
+
+datasets_mcpas_norm_median_pb <- cbind(datasets_mcpas_overlap_norm_pb_cd_median, datasets_mcpas_overlap_norm_pb_cmv_median, datasets_mcpas_overlap_norm_pb_ebv_median, datasets_mcpas_overlap_norm_pb_flu_median, datasets_mcpas_overlap_norm_pb_hiv_median, datasets_mcpas_overlap_norm_pb_ms_median, datasets_mcpas_overlap_norm_pb_ra_median, datasets_mcpas_overlap_norm_pb_t1d_median, datasets_mcpas_overlap_norm_pb_tbc_median, datasets_mcpas_overlap_norm_pb_yfv_median)
+
+datasets_mcpas_norm_median_pb_df <- melt(datasets_mcpas_norm_median_pb)
+
+datasets_mcpas_norm_median_csf_pb_df <- cbind(datasets_mcpas_norm_median_pb_df, datasets_mcpas_norm_median_df)
+
+#### vdjdb ####
+#### median values only for flu and htlv-1, where the trend is higher in CSF ####
+
+datasets_vdjdb_overlap_norm_csf <- datasets_vdjdb_overlap_cat_patho_melt_df2 %>% filter(compartment == "CSF")
+#write.csv(file="datasets_vdjdb_overlap_norm_csf.csv", datasets_vdjdb_overlap_norm_csf)
+datasets_vdjdb_overlap_norm_pb <- datasets_vdjdb_overlap_cat_patho_melt_df2 %>% filter(compartment == "PB")
+#write.csv(file="datasets_vdjdb_overlap_norm_pb.csv", datasets_vdjdb_overlap_norm_pb)
+
+datasets_vdjdb_overlap_norm_csf_flu <- datasets_vdjdb_overlap_norm_csf %>% filter(Var1 == "InfluenzaA")
+datasets_vdjdb_overlap_norm_csf_flu_median <- median(datasets_vdjdb_overlap_norm_csf_flu$value_norm) #9.0
+
+datasets_vdjdb_overlap_norm_csf_flu <- datasets_vdjdb_overlap_norm_csf %>% filter(Var1 == "InfluenzaA")
+datasets_vdjdb_overlap_norm_csf_flu_median <- median(datasets_vdjdb_overlap_norm_csf_flu$value_norm)
+
+datasets_vdjdb_overlap_norm_csf_htlv1 <- datasets_vdjdb_overlap_norm_csf %>% filter(Var1 == "HTLV-1")
+datasets_vdjdb_overlap_norm_csf_htlv1_median <- median(datasets_vdjdb_overlap_norm_csf_htlv1$value_norm) #-34.5
+
+datasets_vdjdb_overlap_norm_pb_htlv1 <- datasets_vdjdb_overlap_norm_pb %>% filter(Var1 == "HTLV-1")
+datasets_vdjdb_overlap_norm_pb_htlv1_median <- median(datasets_vdjdb_overlap_norm_pb_htlv1$value_norm) #-34.5
+
+
+@
+
+\end{document}
